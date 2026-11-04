@@ -1,44 +1,15 @@
 function x = main(y, params)
-    % Optional GPU backend. The default remains the original CPU path.
-    if isfield(params, 'use_gpu') && params.use_gpu
-        x = solver_dual_p_core_gpu(y, params);
-        return;
-    end
-    %MAIN Standalone dual-p image filtering core.
-    % Extracted from JPEG_optimizer_dual_p.m; numerical code is unchanged.
-    %
-    % x = main(y, params)
+    %MAIN Edge-preserving image smoothing.
     % y: real double H-by-W or H-by-W-by-C image, H,W >= 3.
-    %    Supply the intended intensity scale (original caller used [0,1]).
-    %    This function performs no conversion, normalization or prefiltering.
     % params: lambda1, lambda2, rho1, rho2, p1, p2, max_iter.
-    %    rho1,rho2 must be positive; max_iter is a positive integer.
-    %    lambda1/rho1 and lambda2/rho2 control the two shrinkage updates.
-    %    Use nonnegative lambdas and 0 < p1,p2 <= 1 for the intended use.
-    % x: filtered image, same size as y; output is not clipped to [0,1].
-    %
-    % Periodic boundaries are implemented by FFT. Gradient shrinkage couples
-    % all channels; symmetric 2-by-2 Hessians are shrunk per channel through
-    % signed eigenvalues. The mixed Hessian term has weight 2.
-    % Iteration count is fixed; there is no convergence-based stopping rule.
-    % The p-shrinkage updates are preserved as implemented; this extraction
-    % does not establish an exact proximal map for explicit lp/Schatten-p penalties.
-    % Requires psf2otf (Image Processing Toolbox).
-    %
-    % Example parameters copied from the source INITIAL configuration only
-    % (not a claim of optimal parameters for an unpreprocessed input):
-    % params = struct('lambda1',0.01243,'lambda2',0.0004662, ...
-    %     'rho1',2.43857,'rho2',0.21213,'p1',0.0138,'p2',0.1085, ...
-    %     'max_iter',100);
-    % x = main(y, params);
-    % 提取参数
+    % Requires Image Processing Toolbox (psf2otf).
     lam1 = params.lambda1; lam2 = params.lambda2;
     rho1 = params.rho1; rho2 = params.rho2;
     p1 = params.p1; p2 = params.p2;
 
     [H, W, C] = size(y);
 
-    % --- 1. 预计算算子 (FFT) ---
+    % Periodic derivative operators.
     dx = [1, -1]; dy = [1; -1];
     F_dx = psf2otf(dx, [H, W]); F_dy = psf2otf(dy, [H, W]);
 
@@ -48,11 +19,9 @@ function x = main(y, params)
     F_dyy = psf2otf(dyy, [H, W]);
     F_dxy = psf2otf(dxy, [H, W]);
 
-    % LHS 分母 (注意 Hessian 混合项系数 2)
     Denom = 1 + rho1 * (abs(F_dx).^2 + abs(F_dy).^2) + ...
                 rho2 * (abs(F_dxx).^2 + abs(F_dyy).^2 + 2 * abs(F_dxy).^2);
 
-    % --- 2. 变量初始化 ---
     x = y;
     w_dx = zeros(H, W, C); w_dy = zeros(H, W, C);
     u1_dx = zeros(H, W, C); u1_dy = zeros(H, W, C);
@@ -60,10 +29,9 @@ function x = main(y, params)
     z_xx = zeros(H, W, C); z_yy = zeros(H, W, C); z_xy = zeros(H, W, C);
     u2_xx = zeros(H, W, C); u2_yy = zeros(H, W, C); u2_xy = zeros(H, W, C);
 
-    % --- 3. ADMM 主循环 ---
     for k = 1:params.max_iter
 
-        % Step 1: x update (FFT)
+        % Image update.
         rhs_grad = conj(F_dx) .* fft2(w_dx - u1_dx) + ...
                    conj(F_dy) .* fft2(w_dy - u1_dy);
         rhs_hess = conj(F_dxx) .* fft2(z_xx - u2_xx) + ...
@@ -73,12 +41,11 @@ function x = main(y, params)
         rhs_total = fft2(y) + rho1 * rhs_grad + rho2 * rhs_hess;
         x = real(ifft2(rhs_total ./ Denom));
 
-        % Compute derivatives
         fx = fft2(x);
         Dx = real(ifft2(fx .* F_dx)); Dy = real(ifft2(fx .* F_dy));
         Dxx = real(ifft2(fx .* F_dxx)); Dyy = real(ifft2(fx .* F_dyy)); Dxy = real(ifft2(fx .* F_dxy));
 
-        % Step 2: w update (Gradient, p1)
+        % Joint-channel gradient shrinkage.
         T_dx = Dx + u1_dx; T_dy = Dy + u1_dy;
         mag_sq = sum(T_dx.^2 + T_dy.^2, 3);
         M = sqrt(mag_sq);
@@ -91,8 +58,7 @@ function x = main(y, params)
         w_dx = scale_factor .* T_dx;
         w_dy = scale_factor .* T_dy;
 
-        % Step 3: z update (Hessian, p2)
-        % 逐通道处理 Hessian
+        % Per-channel Hessian spectral shrinkage.
         for c = 1:C
             K_xx = Dxx(:,:,c) + u2_xx(:,:,c);
             K_yy = Dyy(:,:,c) + u2_yy(:,:,c);
@@ -105,11 +71,9 @@ function x = main(y, params)
             eig1 = (tr + delta) / 2;
             eig2 = (tr - delta) / 2;
 
-            % 使用 p2 进行广义收缩
             eig1_new = generalized_shrinkage(eig1, lam2, rho2, p2);
             eig2_new = generalized_shrinkage(eig2, lam2, rho2, p2);
 
-            % 重构
             is_singular = delta < 1e-9;
             c1 = zeros(size(delta));
 
@@ -130,7 +94,7 @@ function x = main(y, params)
             z_xy(:,:,c) = c1 .* K_xy;
         end
 
-        % Step 4: Multiplier update
+        % Dual updates.
         u1_dx = u1_dx + (Dx - w_dx); u1_dy = u1_dy + (Dy - w_dy);
         u2_xx = u2_xx + (Dxx - z_xx); u2_yy = u2_yy + (Dyy - z_yy); u2_xy = u2_xy + (Dxy - z_xy);
     end

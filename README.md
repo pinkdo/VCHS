@@ -8,13 +8,11 @@ The method combines a joint color-gradient penalty with a channel-wise Hessian s
 
 | File | Purpose |
 | --- | --- |
-| `main.m` | Main entry point; CPU implementation with optional GPU dispatch. |
-| `solver_dual_p_core_gpu.m` | Double-precision GPU implementation. |
+| `main.m` | Self-contained CPU filtering implementation. |
 
 ## Requirements
 
 - MATLAB with Image Processing Toolbox (`psf2otf`).
-- Optional GPU execution: Parallel Computing Toolbox and a MATLAB-supported GPU.
 
 ## Quick start
 
@@ -29,7 +27,7 @@ Supply an input image and run:
 ```matlab
 y = im2double(imread('input.png'));
 
-% Example configuration from the source file.
+% Example configuration.
 params = struct('lambda1', 0.01243, 'lambda2', 0.0004662, ...
                 'rho1', 2.43857, 'rho2', 0.21213, ...
                 'p1', 0.0138, 'p2', 0.1085, ...
@@ -45,15 +43,6 @@ imwrite(x_display, 'filtered.png');
 
 These parameters demonstrate the interface. Select parameters for the intended input scale and application.
 
-For GPU execution, keep both `.m` files on the MATLAB path and use the same entry point:
-
-```matlab
-params.use_gpu = true;
-x = main(y, params);
-```
-
-The GPU backend converts its input to double precision on the GPU and returns the result as a CPU array.
-
 ## Input and output
 
 ```matlab
@@ -61,7 +50,7 @@ x = main(y, params)
 ```
 
 - `y`: a real double image of size `H`-by-`W` or `H`-by-`W`-by-`C`, with `H,W >= 3`. RGB images use `C = 3`; grayscale images are also supported. The example uses intensities in `[0,1]`.
-- `params`: a structure containing all seven required fields below, and optionally `use_gpu`.
+- `params`: a structure containing all seven required fields below.
 - `x`: the filtered image, with the same size as `y`.
 
 The caller supplies intensity conversion and any application-specific preprocessing. The core processes the supplied image directly and returns floating-point values without clipping.
@@ -77,7 +66,6 @@ The caller supplies intensity conversion and any application-specific preprocess
 | `p1` | First-order shrinkage shape parameter | `0 < p1 <= 1` |
 | `p2` | Hessian shrinkage shape parameter | `0 < p2 <= 1` |
 | `max_iter` | Number of ADMM iterations | Positive integer |
-| `use_gpu` | Optional GPU dispatch flag | `false` by default |
 
 The shrinkage scales are `lambda1/rho1` and `lambda2/rho2`. The quadratic coefficients also enter the FFT image update.
 
